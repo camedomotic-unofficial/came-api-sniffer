@@ -11,6 +11,9 @@ __pycache__/
 .venv/
 venv/
 
+# Claude Code
+.claude/
+
 # IDE
 .vscode/
 !.vscode/settings.json
