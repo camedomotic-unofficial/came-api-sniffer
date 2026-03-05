@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAME API Sniffer</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <h1>CAME API Sniffer</h1>
+                <span class="exchange-counter">Exchanges: <span id="total-exchanges">0</span></span>
+            </div>
+            <div class="header-right">
+                <div class="ws-indicator" id="ws-indicator">
+                    <span class="ws-dot"></span>
+                    <span class="ws-label">Disconnected</span>
+                </div>
+                <label class="auto-refresh-toggle">
+                    <input type="checkbox" id="auto-refresh" checked>
+                    <span>Auto-refresh</span>
+                </label>
+            </div>
+        </header>
+
+        <!-- Search Bar -->
+        <div class="search-bar">
+            <input type="text" id="search-text" placeholder="Search (path, request, response)..." class="search-input">
+            <input type="text" id="session-id" placeholder="Session ID" class="search-input">
+            <select id="app-method" class="search-input">
+                <option value="">All Methods</option>
+            </select>
+            <input type="datetime-local" id="from-ts" class="search-input" placeholder="From">
+            <input type="datetime-local" id="to-ts" class="search-input" placeholder="To">
+            <button id="search-btn" class="btn btn-primary">Search</button>
+            <button id="reset-btn" class="btn btn-secondary">Reset</button>
+            <div class="export-dropdown">
+                <button id="export-btn" class="btn btn-export">↓ Export</button>
+                <div class="export-menu" id="export-menu">
+                    <button class="export-option" data-mode="current">Export Results</button>
+                    <button class="export-option" data-mode="session">Export Session</button>
+                    <button class="export-option" data-mode="range">Export Range</button>
+                    <button class="export-option" data-mode="all">Export All</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Exchange List -->
+            <div class="exchange-list-container">
+                <div id="pending-badge" class="pending-badge" style="display: none;">
+                    <span id="pending-count">0</span> new exchanges
+                </div>
+                <table class="exchange-table" id="exchange-table">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Session ID</th>
+                            <th>Method</th>
+                            <th>Path</th>
+                            <th>Status</th>
+                            <th>Duration (ms)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="exchange-tbody">
+                    </tbody>
+                </table>
+
+                <!-- Pagination -->
+                <div class="pagination" id="pagination">
+                    <button id="prev-page" class="btn btn-small">← Prev</button>
+                    <span id="page-info"></span>
+                    <button id="next-page" class="btn btn-small">Next →</button>
+                </div>
+
+                <!-- Loading -->
+                <div id="loading" class="loading" style="display: none;">
+                    Loading...
+                </div>
+            </div>
+
+            <!-- Detail Panel -->
+            <div class="detail-panel" id="detail-panel" style="display: none;">
+                <button class="close-btn" id="close-detail">✕</button>
+                <div id="detail-content">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for export options -->
+    <div id="export-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <button class="close-btn" id="close-modal">✕</button>
+            <h3>Export Exchanges</h3>
+            <div id="export-form"></div>
+            <button id="export-confirm" class="btn btn-primary">Download</button>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
