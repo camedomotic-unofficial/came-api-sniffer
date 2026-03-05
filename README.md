@@ -140,4 +140,4 @@ All settings are in `.env` (see `.env.example`):
 
 ## License
 
-This project is provided as-is for personal research and educational use.
+This project is licensed under the [MIT License](LICENSE).
