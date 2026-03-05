@@ -1,7 +1,8 @@
 {
   "name": "CAME API Sniffer",
   "build": {
-    "dockerfile": "Dockerfile"
+    "dockerfile": "Dockerfile",
+    "context": ".."
   },
   "forwardPorts": [80, 8081],
   "customizations": {
