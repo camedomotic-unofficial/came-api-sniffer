@@ -23,13 +23,16 @@
                     <input type="checkbox" id="auto-refresh" checked>
                     <span>Auto-refresh</span>
                 </label>
+                <button id="clear-all-btn" class="btn btn-danger">Clear All</button>
             </div>
         </header>
 
         <!-- Search Bar -->
         <div class="search-bar">
             <input type="text" id="search-text" placeholder="Search (path, request, response)..." class="search-input">
-            <input type="text" id="session-id" placeholder="Session ID" class="search-input">
+            <select id="session-id" class="search-input">
+                <option value="">All Sessions</option>
+            </select>
             <select id="app-method" class="search-input">
                 <option value="">All Methods</option>
             </select>
@@ -59,11 +62,10 @@
                     <thead>
                         <tr>
                             <th>Timestamp</th>
-                            <th>Session ID</th>
+                            <th>Session</th>
                             <th>Method</th>
-                            <th>Path</th>
                             <th>Status</th>
-                            <th>Duration (ms)</th>
+                            <th>Duration</th>
                         </tr>
                     </thead>
                     <tbody id="exchange-tbody">
@@ -99,6 +101,66 @@
             <h3>Export Exchanges</h3>
             <div id="export-form"></div>
             <button id="export-confirm" class="btn btn-primary">Download</button>
+        </div>
+    </div>
+
+    <!-- Modal for clear all confirmation -->
+    <div id="clear-all-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <button class="close-btn" id="close-clear-modal">&#10005;</button>
+            <h3>Clear All Data</h3>
+            <p class="modal-warning">This will permanently delete all captured exchanges from both the database and JSON files. This action cannot be undone.</p>
+            <div class="modal-actions">
+                <button id="clear-cancel" class="btn btn-secondary">Cancel</button>
+                <button id="clear-confirm" class="btn btn-danger">Delete All Data</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for session annotation -->
+    <div id="session-annotation-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <button class="close-btn" id="close-annotation-modal">&#10005;</button>
+            <h3>Session Annotation</h3>
+            <p class="annotation-session-label">Session: <code id="annotation-session-id"></code></p>
+            <div class="form-group">
+                <label for="annotation-name">Name</label>
+                <input type="text" id="annotation-name" placeholder="e.g., Light switching test">
+            </div>
+            <div class="form-group">
+                <label for="annotation-notes">Notes</label>
+                <textarea id="annotation-notes" rows="4" placeholder="Describe what happened in this session..."></textarea>
+            </div>
+            <div class="modal-actions">
+                <button id="annotation-delete" class="btn btn-danger btn-small">Remove</button>
+                <button id="annotation-save" class="btn btn-primary">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for delete session confirmation -->
+    <div id="delete-session-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <button class="close-btn" id="close-delete-session-modal">&#10005;</button>
+            <h3>Delete Session Data</h3>
+            <p class="modal-warning">This will permanently delete all exchanges for session <code id="delete-session-id"></code>. This action cannot be undone.</p>
+            <div class="modal-actions">
+                <button id="delete-session-cancel" class="btn btn-secondary">Cancel</button>
+                <button id="delete-session-confirm" class="btn btn-danger">Delete Session</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for delete single exchange confirmation -->
+    <div id="delete-exchange-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <button class="close-btn" id="close-delete-exchange-modal">&#10005;</button>
+            <h3>Delete Exchange</h3>
+            <p class="modal-warning">This will permanently delete exchange <code id="delete-exchange-id"></code>. This action cannot be undone.</p>
+            <div class="modal-actions">
+                <button id="delete-exchange-cancel" class="btn btn-secondary">Cancel</button>
+                <button id="delete-exchange-confirm" class="btn btn-danger">Delete Exchange</button>
+            </div>
         </div>
     </div>
 

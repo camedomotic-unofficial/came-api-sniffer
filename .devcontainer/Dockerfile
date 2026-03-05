@@ -5,6 +5,14 @@ WORKDIR /workspace
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     gh \
+    curl \
+    procps \
+    jq \
+    sqlite3 \
+    lsof \
+    iputils-ping \
+    iproute2 \
+    less \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

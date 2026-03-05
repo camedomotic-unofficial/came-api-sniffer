@@ -7,6 +7,7 @@ CAME server, captures responses, and logs all traffic to storage.
 import json
 from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import unquote
 from uuid import uuid4
 
 import aiohttp
@@ -63,29 +64,45 @@ class ProxyHandler:
         except Exception:
             return None, None
 
-    def _parse_request_body(self, raw_body: bytes) -> tuple[Any, bool]:
-        """Parse request body as JSON if possible.
+    def _parse_request_body(self, raw_body: bytes) -> tuple[str, Optional[dict], bool]:
+        """Parse request body, handling form-urlencoded CAME format.
+
+        CAME requests use Content-Type: application/x-www-form-urlencoded with
+        body format: command={JSON}. This method extracts the JSON from the
+        command parameter.
 
         Args:
             raw_body: Raw body bytes.
 
         Returns:
-            Tuple of (parsed_body, is_json).
-            - If valid JSON: returns parsed dict and True.
-            - If invalid JSON: returns raw string and False.
-            - If empty: returns None and False.
+            Tuple of (raw_string, parsed_json_or_None, is_form_encoded).
+            - raw_string: the body as a string (for storage as-is)
+            - parsed_json: the extracted JSON dict (from command= param or direct parse), or None
+            - is_form_encoded: True if body was form-urlencoded with command= prefix
         """
         if not raw_body:
-            return None, False
+            return "", None, False
 
         try:
-            body = json.loads(raw_body.decode("utf-8"))
-            return body, True
-        except (json.JSONDecodeError, UnicodeDecodeError):
+            body_str = raw_body.decode("utf-8")
+        except UnicodeDecodeError:
+            return str(raw_body), None, False
+
+        # Check for CAME form-urlencoded format: command={JSON}
+        if body_str.startswith("command="):
+            json_str = unquote(body_str[len("command="):])
             try:
-                return raw_body.decode("utf-8"), False
-            except UnicodeDecodeError:
-                return str(raw_body), False
+                parsed = json.loads(json_str)
+                return body_str, parsed, True
+            except json.JSONDecodeError:
+                return body_str, None, True
+
+        # Fallback: try direct JSON parse
+        try:
+            parsed = json.loads(body_str)
+            return body_str, parsed, False
+        except json.JSONDecodeError:
+            return body_str, None, False
 
     def _filter_headers(self, headers: dict[str, str]) -> dict[str, str]:
         """Filter out hop-by-hop headers.
@@ -133,12 +150,10 @@ class ProxyHandler:
         try:
             # Read request body
             raw_body = await request.read()
-            parsed_body, is_json = self._parse_request_body(raw_body)
+            body_raw_str, body_parsed, is_form_encoded = self._parse_request_body(raw_body)
 
-            # Extract metadata
-            session_id, app_method = self._extract_metadata(
-                parsed_body if is_json else None
-            )
+            # Extract metadata from parsed JSON
+            session_id, app_method = self._extract_metadata(body_parsed)
 
             # Build request data
             request_headers = dict(request.headers)
@@ -147,7 +162,8 @@ class ProxyHandler:
                 "path": request.path,
                 "query_string": request.query_string,
                 "headers": self._filter_headers(request_headers),
-                "body": parsed_body if is_json else raw_body.decode("utf-8", errors="replace"),
+                "body": body_raw_str,
+                "body_parsed": body_parsed,
             }
 
             # Save request to storage
@@ -185,8 +201,8 @@ class ProxyHandler:
                 ) as came_response:
                     response_body = await came_response.read()
 
-                    # Parse response body
-                    response_parsed, response_is_json = self._parse_request_body(response_body)
+                    # Parse response body (responses are direct JSON)
+                    response_raw_str, response_parsed, _ = self._parse_request_body(response_body)
 
                     timestamp_end = datetime.now(timezone.utc).replace(tzinfo=None)
                     duration_ms = int(
@@ -197,16 +213,44 @@ class ProxyHandler:
                     response_data = {
                         "status_code": came_response.status,
                         "headers": dict(came_response.headers),
-                        "body": response_parsed if response_is_json else response_body.decode("utf-8", errors="replace"),
+                        "body": response_parsed if response_parsed is not None else response_raw_str,
                         "timestamp_end": timestamp_end.isoformat() + "Z",
                         "duration_ms": duration_ms,
                     }
 
                     await storage.save_response(exchange_id, response_data)
+
+                    # For login requests, extract session_id from response
+                    if app_method == "sl_registration_req" and session_id is None:
+                        if isinstance(response_parsed, dict):
+                            resp_session_id = response_parsed.get("sl_client_id")
+                            if resp_session_id:
+                                session_id = resp_session_id
+                                await storage.update_session_id(
+                                    exchange_id, session_id, timestamp_start
+                                )
+                                LOGGER.info(
+                                    f"[{exchange_id}] Login request: assigned "
+                                    f"session_id={session_id} from response"
+                                )
+
                     LOGGER.info(
                         f"[{exchange_id}] Response: {came_response.status} "
                         f"({duration_ms}ms)"
                     )
+
+                    # Broadcast to WebSocket clients
+                    dashboard = request.app.get("dashboard")
+                    if dashboard:
+                        await dashboard.broadcast_exchange({
+                            "exchange_id": exchange_id,
+                            "session_id": session_id,
+                            "app_method": app_method,
+                            "timestamp_start": timestamp_start.isoformat() + "Z",
+                            "path": request.path,
+                            "status_code": came_response.status,
+                            "duration_ms": duration_ms,
+                        })
 
                     # Return response to client
                     response = web.StreamResponse(

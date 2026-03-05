@@ -84,8 +84,8 @@ The devcontainer includes:
 
 1. **Async/Await**: All I/O is non-blocking (aiohttp, aiosqlite). Single asyncio event loop runs both proxy and dashboard. No blocking operations in the event loop.
 
-2. **Metadata Extraction**: The proxy extracts from JSON request bodies:
-   - `session_id` from `sl_client_id` field (can be `null` if body is not JSON or field missing)
+2. **Metadata Extraction**: The proxy parses the `command` form parameter from `application/x-www-form-urlencoded` request bodies, extracts the JSON payload, and pulls:
+   - `session_id` from `sl_client_id` field (can be `null` if body is not parsable or field missing)
    - `app_method` from `sl_appl_msg.cmd_name` → fallback to `sl_cmd` (can be `null`)
    - See "CAME Request Format" section below for context
 
@@ -101,7 +101,20 @@ The devcontainer includes:
 
 ## CAME Request Format
 
-CAME API requests follow this JSON structure:
+CAME API requests use `Content-Type: application/x-www-form-urlencoded`. The body contains a single `command` parameter whose value is a JSON string:
+
+```
+POST /domo/ HTTP/1.1
+Host: 192.168.1.3
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 96
+Connection: Keep-Alive
+User-Agent: Mozilla/5.0
+
+command={"sl_cmd":"sl_registration_req","sl_login":"admin","sl_pwd":"admin"}
+```
+
+The JSON payload inside `command` has this typical structure:
 
 ```json
 {
@@ -116,18 +129,20 @@ CAME API requests follow this JSON structure:
 }
 ```
 
-**Metadata extraction:**
+**Responses** from the CAME server are standard `application/json` (no form wrapper).
+
+**Metadata extraction** (from the parsed JSON inside `command`):
 - `sl_client_id` → **session_id** (groups exchanges, used in filtering and filenames)
 - `sl_appl_msg.cmd_name` → **app_method** (shown in dashboard as primary method)
 - `sl_cmd` → **app_method fallback** (used if cmd_name not present)
 
-Both can be `null` if the request body is not JSON or fields are missing.
+Both can be `null` if the body cannot be parsed or the fields are missing.
 
 ## Data Flow
 
 1. **Incoming Request**: Android app → Proxy (port 80)
 2. **Generate Exchange ID**: Create UUID v4 for this exchange
-3. **Extraction**: Parse JSON body, extract session_id + app_method
+3. **Extraction**: Parse `command` form parameter → extract JSON → pull session_id + app_method
 4. **Log Request**: Save request details (JSON + SQLite)
 5. **Forward**: Proxy → CAME Server (aiohttp.ClientSession, method/path/query/headers/body identical)
 6. **Capture Response**: Receive response, measure duration
@@ -164,10 +179,11 @@ Location: `data/exchanges/`
 
 Example: `5046b5a9_20250315-143022-456_a1b2c3d4.json`
 
-**Format**: See README.md for JSON structure. Both request and response bodies are stored:
-- If body is valid JSON: stored as object
-- If body is not JSON: stored as string
-- Either can have syntax highlighting in dashboard
+**Format**: See README.md for JSON structure. Request and response bodies are stored:
+- Request `body`: raw body string (e.g. `command={...}` for form-urlencoded requests)
+- Request `body_parsed`: parsed JSON object extracted from the `command` parameter
+- Response `body`: if valid JSON stored as object, otherwise as string
+- Dashboard shows `body_parsed` with syntax highlighting; export uses raw body
 
 ### SQLite Database
 
@@ -177,7 +193,8 @@ Location: `data/came_proxy.db`
 - `exchange_id` (TEXT PRIMARY KEY) — UUID v4
 - `session_id`, `app_method`, `method` (HTTP), `path`, `query_string`
 - `timestamp_start`, `timestamp_end`, `duration_ms`
-- `request_headers`, `request_body`, `response_headers`, `response_body` (all stored as JSON strings)
+- `request_headers` (JSON string), `request_body` (raw body string), `request_body_parsed` (parsed JSON string)
+- `response_headers` (JSON string), `response_body` (JSON string or raw text)
 - `status_code`, `error` (error message if request failed)
 
 **Indexes**:
@@ -186,7 +203,7 @@ Location: `data/came_proxy.db`
 - `idx_app_method` — find by method
 - `idx_path` — find by path
 
-**FTS5** (Full-Text Search): Virtual table `exchanges_fts` indexes `exchange_id`, `session_id`, `app_method`, `path`, `request_body`, `response_body` with automatic sync triggers.
+**FTS5** (Full-Text Search): Virtual table `exchanges_fts` indexes `exchange_id`, `session_id`, `app_method`, `path`, `request_body_parsed`, `response_body` with automatic sync triggers.
 
 **Database features**:
 - WAL mode enabled (better concurrency)
@@ -256,11 +273,13 @@ Frontend uses vanilla JavaScript (no build step). Changes are immediately visibl
 
 Proxy.py's `handle_request()` method:
 1. Reads entire request body into memory
-2. Parses as JSON and extracts metadata
-3. Creates aiohttp request to CAME server
-4. Waits for response (with timeout)
-5. Reads entire response body
-6. Stores complete exchange to storage
+2. Parses body: if form-urlencoded with `command=` prefix, extracts JSON from `command` param; otherwise tries direct JSON parse
+3. Extracts metadata (session_id, app_method) from parsed JSON
+4. Stores raw body in `request_body`, parsed JSON in `request_body_parsed`
+5. Forwards raw body identically to CAME server
+6. Waits for response (with timeout)
+7. Reads entire response body
+8. Stores complete exchange to storage
 
 This approach ensures zero data loss but uses more memory for large payloads. If scaling to very high traffic, consider streaming.
 
@@ -280,13 +299,13 @@ This approach ensures zero data loss but uses more memory for large payloads. If
 - **Headers filtering**: Removes hop-by-hop headers before forwarding:
   - Connection, Keep-Alive, Transfer-Encoding, Content-Length (recalculated if needed)
   - Proxy-related headers
-- **Body handling**: Forwards request body identically, whether JSON or binary
+- **Body handling**: Forwards raw request body identically (form-urlencoded `command=...` or otherwise). Parsing is only for logging/metadata extraction, not for forwarding.
 
 ### Error Handling
 - **502 Bad Gateway**: Returned if CAME server is unreachable (stored in exchange `error` field)
 - **504 Gateway Timeout**: Returned if CAME server doesn't respond within timeout (30s total, 10s connect)
 - **Non-fatal errors**: Logged to console and DB; proxy continues running (doesn't crash)
-- **Malformed requests**: If body is not JSON, `session_id` and `app_method` are `null` (processing continues normally)
+- **Malformed requests**: If body cannot be parsed (neither form-urlencoded with `command=` nor direct JSON), `session_id` and `app_method` are `null` (processing continues normally)
 
 ### Database & Storage
 - **Dual write**: Every exchange written to both JSON file and SQLite in parallel (non-blocking)

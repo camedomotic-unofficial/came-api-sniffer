@@ -30,8 +30,7 @@ class Exporter:
             Formatted string.
         """
         separator = "=" * 70
-        separator_request = "-" * 70
-        separator_response = "-" * 70
+        sep_section = "-" * 70
 
         lines = [separator]
         lines.append(f"EXCHANGE: {exchange['exchange_id']}")
@@ -45,61 +44,63 @@ class Exporter:
         lines.append(separator)
         lines.append("")
 
-        # REQUEST section
-        lines.append(separator_request)
+        # REQUEST section — full HTTP format
+        lines.append(sep_section)
         lines.append("REQUEST")
-        lines.append(separator_request)
+        lines.append(sep_section)
 
         method = exchange.get("method", "UNKNOWN")
         path = exchange.get("path", "/")
         query_string = exchange.get("query_string", "")
-        lines.append(f"{method} {path}{query_string}")
-        lines.append("")
+        url = f"{path}{'?' + query_string if query_string else ''}"
+        lines.append(f"{method} {url} HTTP/1.1")
 
         # Headers
         request_headers = exchange.get("request_headers", {})
-        if request_headers:
-            lines.append("Headers:")
-            for key, value in request_headers.items():
-                lines.append(f"  {key}: {value}")
-            lines.append("")
+        if isinstance(request_headers, str):
+            try:
+                request_headers = json.loads(request_headers)
+            except json.JSONDecodeError:
+                request_headers = {}
+        for key, value in request_headers.items():
+            lines.append(f"{key}: {value}")
 
-        # Body
+        lines.append("")  # blank line between headers and body
+
+        # Raw body
         request_body = exchange.get("request_body")
         if request_body:
-            lines.append("Body:")
-            if isinstance(request_body, dict):
-                lines.append(json.dumps(request_body, indent=2))
-            else:
-                lines.append(str(request_body))
-            lines.append("")
+            lines.append(str(request_body))
+        lines.append("")
 
-        # RESPONSE section
-        lines.append(separator_response)
+        # RESPONSE section — full HTTP format
+        lines.append(sep_section)
         lines.append("RESPONSE")
-        lines.append(separator_response)
+        lines.append(sep_section)
 
         status_code = exchange.get("status_code", "N/A")
-        lines.append(f"Status: {status_code}")
-        lines.append("")
+        lines.append(f"HTTP/1.1 {status_code}")
 
         # Headers
         response_headers = exchange.get("response_headers", {})
-        if response_headers:
-            lines.append("Headers:")
-            for key, value in response_headers.items():
-                lines.append(f"  {key}: {value}")
-            lines.append("")
+        if isinstance(response_headers, str):
+            try:
+                response_headers = json.loads(response_headers)
+            except json.JSONDecodeError:
+                response_headers = {}
+        for key, value in response_headers.items():
+            lines.append(f"{key}: {value}")
 
-        # Body
+        lines.append("")  # blank line between headers and body
+
+        # Raw body
         response_body = exchange.get("response_body")
         if response_body:
-            lines.append("Body:")
             if isinstance(response_body, dict):
-                lines.append(json.dumps(response_body, indent=2))
+                lines.append(json.dumps(response_body))
             else:
                 lines.append(str(response_body))
-            lines.append("")
+        lines.append("")
 
         lines.append(separator)
         lines.append("")
@@ -114,38 +115,41 @@ class Exporter:
         """
         try:
             storage = await get_storage()
-            exchanges, _ = await storage.query_exchanges(page=1, page_size=10000)
+            exchange_summaries, _ = await storage.query_exchanges(page=1, page_size=10000)
 
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             filename = f"export_all_{timestamp}.txt"
             filepath = self.exports_dir / filename
 
             content = ""
-            for exchange in exchanges:
-                content += self._format_exchange(exchange)
+            for summary in reversed(exchange_summaries):
+                full = await storage.get_exchange(summary["exchange_id"])
+                if full:
+                    content += self._format_exchange(full)
 
             with open(filepath, "w") as f:
                 f.write(content)
 
-            LOGGER.info(f"Exported {len(exchanges)} exchanges to {filename}")
+            LOGGER.info(f"Exported {len(exchange_summaries)} exchanges to {filename}")
             return filepath
 
         except Exception as e:
             LOGGER.error(f"Error exporting: {e}")
             raise
 
-    async def export_session(self, session_id: str) -> Path:
+    async def export_session(self, session_id: str, exclude_method: Optional[str] = None) -> Path:
         """Export exchanges for specific session.
 
         Args:
             session_id: Session ID to export.
+            exclude_method: App method to exclude from export (e.g. 'status_update_req').
 
         Returns:
             Path to exported file.
         """
         try:
             storage = await get_storage()
-            exchanges, _ = await storage.query_exchanges(
+            exchange_summaries, _ = await storage.query_exchanges(
                 page=1, page_size=10000, session_id=session_id
             )
 
@@ -154,14 +158,18 @@ class Exporter:
             filepath = self.exports_dir / filename
 
             content = ""
-            for exchange in exchanges:
-                content += self._format_exchange(exchange)
+            for summary in reversed(exchange_summaries):
+                if exclude_method and summary.get("app_method") == exclude_method:
+                    continue
+                full = await storage.get_exchange(summary["exchange_id"])
+                if full:
+                    content += self._format_exchange(full)
 
             with open(filepath, "w") as f:
                 f.write(content)
 
             LOGGER.info(
-                f"Exported {len(exchanges)} exchanges for session {session_id} "
+                f"Exported {len(exchange_summaries)} exchanges for session {session_id} "
                 f"to {filename}"
             )
             return filepath
@@ -184,7 +192,7 @@ class Exporter:
         """
         try:
             storage = await get_storage()
-            exchanges, _ = await storage.query_exchanges(
+            exchange_summaries, _ = await storage.query_exchanges(
                 page=1, page_size=10000, from_ts=from_ts, to_ts=to_ts
             )
 
@@ -193,14 +201,16 @@ class Exporter:
             filepath = self.exports_dir / filename
 
             content = ""
-            for exchange in exchanges:
-                content += self._format_exchange(exchange)
+            for summary in reversed(exchange_summaries):
+                full = await storage.get_exchange(summary["exchange_id"])
+                if full:
+                    content += self._format_exchange(full)
 
             with open(filepath, "w") as f:
                 f.write(content)
 
             LOGGER.info(
-                f"Exported {len(exchanges)} exchanges for range "
+                f"Exported {len(exchange_summaries)} exchanges for range "
                 f"{from_ts} to {to_ts} to {filename}"
             )
             return filepath

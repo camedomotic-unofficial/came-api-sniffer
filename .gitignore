@@ -11,6 +11,9 @@ __pycache__/
 .venv/
 venv/
 
+# Project docs (private)
+CAME_Proxy_Spec.md
+
 # Claude Code
 .claude/
 

@@ -76,7 +76,7 @@ class DashboardBackend:
             storage = await get_storage()
 
             page = int(request.rel_url.query.get("page", 1))
-            page_size = int(request.rel_url.query.get("page_size", 20))
+            page_size = int(request.rel_url.query.get("page_size", 100))
             search = request.rel_url.query.get("search")
             session_id = request.rel_url.query.get("session_id")
             app_method = request.rel_url.query.get("app_method")
@@ -210,7 +210,8 @@ class DashboardBackend:
                     return web.json_response(
                         {"error": "session_id required for mode=session"}, status=400
                     )
-                filepath = await exporter.export_session(session_id)
+                exclude_method = request.rel_url.query.get("exclude_method")
+                filepath = await exporter.export_session(session_id, exclude_method=exclude_method)
             elif mode == "range":
                 from_ts = request.rel_url.query.get("from_ts")
                 to_ts = request.rel_url.query.get("to_ts")
@@ -233,6 +234,77 @@ class DashboardBackend:
 
         except Exception as e:
             LOGGER.error(f"Error exporting: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_delete_exchange(self, request: web.Request) -> web.Response:
+        """DELETE /api/exchanges/{exchange_id} - Delete a single exchange.
+
+        Returns:
+            JSON confirmation.
+        """
+        try:
+            exchange_id = request.match_info["exchange_id"]
+            storage = await get_storage()
+            deleted = await storage.delete_exchange(exchange_id)
+            if not deleted:
+                return web.json_response(
+                    {"error": "Exchange not found"}, status=404
+                )
+            return web.json_response({
+                "status": "success",
+                "message": f"Deleted exchange {exchange_id}",
+            })
+
+        except Exception as e:
+            LOGGER.error(f"Error deleting exchange: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_delete_session(self, request: web.Request) -> web.Response:
+        """DELETE /api/sessions/{session_id} - Delete all exchanges for a session.
+
+        Returns:
+            JSON confirmation with count of deleted exchanges.
+        """
+        try:
+            session_id = request.match_info["session_id"]
+            storage = await get_storage()
+            count = await storage.delete_session_exchanges(session_id)
+            return web.json_response({
+                "status": "success",
+                "message": f"Deleted {count} exchanges for session {session_id}",
+                "deleted_count": count,
+            })
+
+        except Exception as e:
+            LOGGER.error(f"Error deleting session: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_set_session_annotation(self, request: web.Request) -> web.Response:
+        """PUT /api/sessions/{session_id}/annotation - Set session annotation."""
+        try:
+            session_id = request.match_info["session_id"]
+            body = await request.json()
+            name = body.get("name")
+            notes = body.get("notes")
+
+            storage = await get_storage()
+            result = await storage.set_session_annotation(session_id, name, notes)
+            return web.json_response(result)
+
+        except Exception as e:
+            LOGGER.error(f"Error setting session annotation: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_delete_session_annotation(self, request: web.Request) -> web.Response:
+        """DELETE /api/sessions/{session_id}/annotation - Delete session annotation."""
+        try:
+            session_id = request.match_info["session_id"]
+            storage = await get_storage()
+            await storage.delete_session_annotation(session_id)
+            return web.json_response({"status": "success"})
+
+        except Exception as e:
+            LOGGER.error(f"Error deleting session annotation: {e}")
             return web.json_response({"error": str(e)}, status=500)
 
     async def handle_websocket(self, request: web.Request) -> web.WebSocketResponse:
@@ -280,7 +352,7 @@ class DashboardBackend:
         disconnected = set()
         for ws in self.websocket_clients:
             try:
-                if not ws.is_closed():
+                if not ws.closed:
                     await ws.send_str(message)
             except Exception as e:
                 LOGGER.warning(f"Error broadcasting to client: {e}")
@@ -313,6 +385,10 @@ async def create_dashboard_app(dashboard: DashboardBackend) -> web.Application:
     app.router.add_get("/api/methods", dashboard.api_get_methods)
     app.router.add_get("/api/stats", dashboard.api_get_stats)
     app.router.add_delete("/api/exchanges", dashboard.api_delete_exchanges)
+    app.router.add_delete("/api/exchanges/{exchange_id}", dashboard.api_delete_exchange)
+    app.router.add_delete("/api/sessions/{session_id}", dashboard.api_delete_session)
+    app.router.add_put("/api/sessions/{session_id}/annotation", dashboard.api_set_session_annotation)
+    app.router.add_delete("/api/sessions/{session_id}/annotation", dashboard.api_delete_session_annotation)
     app.router.add_get("/api/export", dashboard.api_export)
 
     # WebSocket

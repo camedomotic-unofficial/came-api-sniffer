@@ -59,6 +59,7 @@ class StorageManager:
                 query_string     TEXT DEFAULT '',
                 request_headers  TEXT NOT NULL,
                 request_body     TEXT,
+                request_body_parsed TEXT,
                 status_code      INTEGER,
                 response_headers TEXT,
                 response_body    TEXT,
@@ -82,6 +83,16 @@ class StorageManager:
             "CREATE INDEX IF NOT EXISTS idx_path ON exchanges(path)"
         )
 
+        # Migration: add request_body_parsed column if missing (for existing DBs)
+        try:
+            await self.db.execute(
+                "ALTER TABLE exchanges ADD COLUMN request_body_parsed TEXT"
+            )
+            await self.db.commit()
+            LOGGER.info("Migrated database: added request_body_parsed column")
+        except (aiosqlite.OperationalError, sqlite3.OperationalError):
+            pass  # Column already exists
+
         # Create FTS5 virtual table for full-text search
         try:
             await self.db.execute(
@@ -91,7 +102,7 @@ class StorageManager:
                     session_id,
                     app_method,
                     path,
-                    request_body,
+                    request_body_parsed,
                     response_body,
                     content='exchanges',
                     content_rowid='rowid'
@@ -103,8 +114,8 @@ class StorageManager:
             await self.db.execute(
                 """
                 CREATE TRIGGER IF NOT EXISTS exchanges_ai AFTER INSERT ON exchanges BEGIN
-                    INSERT INTO exchanges_fts(rowid, exchange_id, session_id, app_method, path, request_body, response_body)
-                    VALUES (new.rowid, new.exchange_id, new.session_id, new.app_method, new.path, new.request_body, new.response_body);
+                    INSERT INTO exchanges_fts(rowid, exchange_id, session_id, app_method, path, request_body_parsed, response_body)
+                    VALUES (new.rowid, new.exchange_id, new.session_id, new.app_method, new.path, new.request_body_parsed, new.response_body);
                 END
                 """
             )
@@ -112,7 +123,8 @@ class StorageManager:
             await self.db.execute(
                 """
                 CREATE TRIGGER IF NOT EXISTS exchanges_ad AFTER DELETE ON exchanges BEGIN
-                    DELETE FROM exchanges_fts WHERE rowid = old.rowid;
+                    INSERT INTO exchanges_fts(exchanges_fts, rowid, exchange_id, session_id, app_method, path, request_body_parsed, response_body)
+                    VALUES('delete', old.rowid, old.exchange_id, old.session_id, old.app_method, old.path, old.request_body_parsed, old.response_body);
                 END
                 """
             )
@@ -120,19 +132,27 @@ class StorageManager:
             await self.db.execute(
                 """
                 CREATE TRIGGER IF NOT EXISTS exchanges_au AFTER UPDATE ON exchanges BEGIN
-                    UPDATE exchanges_fts SET
-                        exchange_id = new.exchange_id,
-                        session_id = new.session_id,
-                        app_method = new.app_method,
-                        path = new.path,
-                        request_body = new.request_body,
-                        response_body = new.response_body
-                    WHERE rowid = old.rowid;
+                    INSERT INTO exchanges_fts(exchanges_fts, rowid, exchange_id, session_id, app_method, path, request_body_parsed, response_body)
+                    VALUES('delete', old.rowid, old.exchange_id, old.session_id, old.app_method, old.path, old.request_body_parsed, old.response_body);
+                    INSERT INTO exchanges_fts(rowid, exchange_id, session_id, app_method, path, request_body_parsed, response_body)
+                    VALUES(new.rowid, new.exchange_id, new.session_id, new.app_method, new.path, new.request_body_parsed, new.response_body);
                 END
                 """
             )
         except aiosqlite.OperationalError as e:
             LOGGER.warning(f"FTS5 setup warning: {e}")
+
+        # Create session_annotations table
+        await self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_annotations (
+                session_id  TEXT PRIMARY KEY,
+                name        TEXT,
+                notes       TEXT,
+                updated_at  TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
 
         await self.db.commit()
         LOGGER.info(f"Database initialized at {self.db_path}")
@@ -202,17 +222,19 @@ class StorageManager:
 
             # Convert headers to JSON string
             request_headers = json.dumps(request.get("headers", {}))
-            request_body = request.get("body")
-            if isinstance(request_body, dict):
-                request_body = json.dumps(request_body)
+            request_body = request.get("body", "")  # raw body string
+            request_body_parsed = request.get("body_parsed")
+            if isinstance(request_body_parsed, dict):
+                request_body_parsed = json.dumps(request_body_parsed)
 
             # Save to SQLite
             await self.db.execute(
                 """
                 INSERT INTO exchanges (
                     exchange_id, session_id, app_method, timestamp_start,
-                    method, path, query_string, request_headers, request_body
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    method, path, query_string, request_headers, request_body,
+                    request_body_parsed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     exchange_id,
@@ -224,6 +246,7 @@ class StorageManager:
                     request.get("query_string", ""),
                     request_headers,
                     request_body,
+                    request_body_parsed,
                 ),
             )
             await self.db.commit()
@@ -298,6 +321,54 @@ class StorageManager:
             LOGGER.error(f"Error saving response: {e}")
             raise
 
+    async def update_session_id(
+        self, exchange_id: str, session_id: str, timestamp_start: datetime
+    ) -> None:
+        """Update session_id for an exchange (e.g. after login response reveals it).
+
+        Updates SQLite, JSON file content, and renames the JSON file to reflect
+        the new session_id.
+
+        Args:
+            exchange_id: Exchange ID.
+            session_id: New session ID to set.
+            timestamp_start: Request timestamp (needed for filename generation).
+        """
+        try:
+            # Update SQLite
+            await self.db.execute(
+                "UPDATE exchanges SET session_id = ? WHERE exchange_id = ?",
+                (session_id, exchange_id),
+            )
+            await self.db.commit()
+
+            # Update and rename JSON file
+            for filepath in self.exchanges_dir.glob("*" + exchange_id[:8] + ".json"):
+                with open(filepath, "r") as f:
+                    data = json.load(f)
+                data["session_id"] = session_id
+
+                # Write updated content to new filename
+                new_filename = self._generate_filename(
+                    session_id, timestamp_start, exchange_id
+                )
+                new_filepath = self.exchanges_dir / new_filename
+                with open(new_filepath, "w") as f:
+                    json.dump(data, f, indent=2)
+
+                # Remove old file if name changed
+                if filepath != new_filepath:
+                    filepath.unlink()
+
+                break
+
+            LOGGER.debug(
+                f"Updated session_id to {session_id} for exchange {exchange_id}"
+            )
+
+        except Exception as e:
+            LOGGER.error(f"Error updating session_id: {e}")
+
     async def save_error(self, exchange_id: str, error_msg: str) -> None:
         """Save error information for an exchange.
 
@@ -327,7 +398,7 @@ class StorageManager:
     async def query_exchanges(
         self,
         page: int = 1,
-        page_size: int = 20,
+        page_size: int = 100,
         search: Optional[str] = None,
         session_id: Optional[str] = None,
         app_method: Optional[str] = None,
@@ -388,7 +459,7 @@ class StorageManager:
             offset = (page - 1) * page_size
             query = f"""
                 SELECT exchange_id, session_id, app_method, timestamp_start,
-                       timestamp_end, duration_ms, method, path, status_code
+                       timestamp_end, duration_ms, method, status_code
                 FROM exchanges
                 WHERE {where_clause}
                 ORDER BY timestamp_start DESC
@@ -440,9 +511,11 @@ class StorageManager:
             except json.JSONDecodeError:
                 exchange["response_headers"] = {}
 
+            # request_body stays as raw string (e.g. "command={...}")
+
             try:
-                if exchange["request_body"]:
-                    exchange["request_body"] = json.loads(exchange["request_body"])
+                if exchange.get("request_body_parsed"):
+                    exchange["request_body_parsed"] = json.loads(exchange["request_body_parsed"])
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -467,11 +540,13 @@ class StorageManager:
         try:
             cursor = await self.db.execute(
                 """
-                SELECT session_id, COUNT(*) as count
-                FROM exchanges
-                WHERE session_id IS NOT NULL
-                GROUP BY session_id
-                ORDER BY session_id
+                SELECT e.session_id, COUNT(*) as count,
+                       sa.name as session_name, sa.notes as session_notes
+                FROM exchanges e
+                LEFT JOIN session_annotations sa ON e.session_id = sa.session_id
+                WHERE e.session_id IS NOT NULL
+                GROUP BY e.session_id
+                ORDER BY e.session_id
                 """
             )
             rows = await cursor.fetchall()
@@ -543,6 +618,7 @@ class StorageManager:
         """Delete all exchanges from database and remove JSON files."""
         try:
             await self.db.execute("DELETE FROM exchanges")
+            await self.db.execute("DELETE FROM session_annotations")
             await self.db.commit()
 
             # Remove JSON files
@@ -553,6 +629,130 @@ class StorageManager:
 
         except Exception as e:
             LOGGER.error(f"Error deleting exchanges: {e}")
+            raise
+
+    async def delete_exchange(self, exchange_id: str) -> bool:
+        """Delete a single exchange by ID.
+
+        Args:
+            exchange_id: Exchange ID to delete.
+
+        Returns:
+            True if the exchange was found and deleted, False otherwise.
+        """
+        try:
+            # Get exchange info for JSON file removal
+            cursor = await self.db.execute(
+                "SELECT session_id, timestamp_start FROM exchanges WHERE exchange_id = ?",
+                (exchange_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return False
+
+            session_id = row["session_id"] or "no-session"
+            exchange_id_short = exchange_id[:8]
+
+            # Delete from SQLite
+            await self.db.execute(
+                "DELETE FROM exchanges WHERE exchange_id = ?", (exchange_id,)
+            )
+            await self.db.commit()
+
+            # Remove JSON file
+            for filepath in self.exchanges_dir.glob(f"*_{exchange_id_short}.json"):
+                filepath.unlink()
+
+            LOGGER.info(f"Deleted exchange {exchange_id}")
+            return True
+
+        except Exception as e:
+            LOGGER.error(f"Error deleting exchange: {e}")
+            raise
+
+    async def delete_session_exchanges(self, session_id: str) -> int:
+        """Delete all exchanges for a given session ID.
+
+        Args:
+            session_id: Session ID whose exchanges should be deleted.
+
+        Returns:
+            int: Number of deleted exchanges.
+        """
+        try:
+            # Count before delete
+            cursor = await self.db.execute(
+                "SELECT COUNT(*) as count FROM exchanges WHERE session_id = ?",
+                (session_id,),
+            )
+            result = await cursor.fetchone()
+            count = result["count"] if result else 0
+
+            # Delete from SQLite
+            await self.db.execute(
+                "DELETE FROM exchanges WHERE session_id = ?", (session_id,)
+            )
+            await self.db.execute(
+                "DELETE FROM session_annotations WHERE session_id = ?",
+                (session_id,),
+            )
+            await self.db.commit()
+
+            # Remove JSON files for this session
+            for filepath in self.exchanges_dir.glob(f"{session_id}_*.json"):
+                filepath.unlink()
+
+            LOGGER.info(f"Deleted {count} exchanges for session {session_id}")
+            return count
+
+        except Exception as e:
+            LOGGER.error(f"Error deleting session exchanges: {e}")
+            raise
+
+    async def set_session_annotation(
+        self, session_id: str, name: Optional[str], notes: Optional[str]
+    ) -> dict[str, Any]:
+        """Set or update annotation for a session (upsert)."""
+        try:
+            await self.db.execute(
+                """
+                INSERT INTO session_annotations (session_id, name, notes, updated_at)
+                VALUES (?, ?, ?, datetime('now'))
+                ON CONFLICT(session_id) DO UPDATE SET
+                    name = excluded.name,
+                    notes = excluded.notes,
+                    updated_at = excluded.updated_at
+                """,
+                (session_id, name, notes),
+            )
+            await self.db.commit()
+            return {"session_id": session_id, "name": name, "notes": notes}
+        except Exception as e:
+            LOGGER.error(f"Error setting session annotation: {e}")
+            raise
+
+    async def get_all_session_annotations(self) -> dict[str, dict[str, Any]]:
+        """Get all session annotations as a dict keyed by session_id."""
+        try:
+            cursor = await self.db.execute(
+                "SELECT session_id, name, notes, updated_at FROM session_annotations"
+            )
+            rows = await cursor.fetchall()
+            return {row["session_id"]: dict(row) for row in rows}
+        except Exception as e:
+            LOGGER.error(f"Error getting session annotations: {e}")
+            raise
+
+    async def delete_session_annotation(self, session_id: str) -> None:
+        """Delete annotation for a session."""
+        try:
+            await self.db.execute(
+                "DELETE FROM session_annotations WHERE session_id = ?",
+                (session_id,),
+            )
+            await self.db.commit()
+        except Exception as e:
+            LOGGER.error(f"Error deleting session annotation: {e}")
             raise
 
 

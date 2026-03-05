@@ -1,466 +1,143 @@
 # CAME API Sniffer
 
-A comprehensive reverse HTTP proxy with logging and analysis dashboard for reverse-engineering the CAME Domotic API. Intercepts and analyzes all traffic between the CAME Domotic Android app and the CAME server on the LAN.
+A transparent HTTP proxy that sits between the **CAME Domotic Android app** and the **CAME server** on your LAN, intercepting and logging all API traffic. Built for reverse-engineering and understanding the CAME Domotic protocol.
 
-## Architecture
+Every request and response is captured, stored in both JSON files and a searchable SQLite database, and displayed in a real-time web dashboard.
 
 ```
-┌──────────────┐         ┌──────────────────┐         ┌──────────────┐
-│ App Android   │──HTTP──▶│   Proxy Python   │──HTTP──▶│ Server CAME  │
-│ CAME Domotic │◀──HTTP──│  (devcontainer)  │◀──HTTP──│ (LAN, :80)   │
-│ (IP → proxy) │  :80    │      :80         │  :80    │              │
-└──────────────┘         └──────────────────┘         └──────────────┘
-                              │         │
-                              ▼         ▼
-                         ┌────────┐ ┌────────┐
-                         │ SQLite │ │  JSON  │
-                         │   DB   │ │ files  │
-                         └────────┘ └────────┘
-                              │
-                              ▼
-                         ┌────────────┐
-                         │ Dashboard  │
-                         │  Web UI    │
-                         │   :8081    │
-                         └────────────┘
+CAME Android App  --HTTP-->  Proxy (port 80)  --HTTP-->  CAME Server (LAN)
+                  <--HTTP--                   <--HTTP--
+                                |
+                                v
+                     JSON files + SQLite DB
+                     Web Dashboard (:8081)
 ```
 
-## Prerequisites
+## Warning
 
-- Docker and Docker Desktop (or Podman)
-- VSCode with Dev Containers extension
-- macOS, Linux, or Windows with WSL2
-- Python 3.14 (inside container)
+> **This project is highly experimental. Use entirely at your own risk.**
+>
+> - There are **no guarantees** of correctness, stability, or safety. Things may break.
+> - The port redirection scripts (`redirect-port80.sh` / `restore-port80.sh`) modify network settings on your **host machine** using `socat` and `sudo`. **They can interfere with your networking** if something goes wrong. The redirect script also runs `killall socat` which will terminate **any** running socat process on your system.
+> - Review every script before running it. Make sure you understand what it does.
+> - This tool is intended for **personal use on your own local network** for research and debugging purposes only.
+> - Ensure compliance with applicable laws and CAME's terms of service.
 
-## Quick Start
+## Getting Started
 
-### 1. Clone and Setup
+### Prerequisites
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) running on your machine
+- [Visual Studio Code](https://code.visualstudio.com/) with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension
+- On macOS: `socat` installed on the host (`brew install socat`) — needed for the port 80 redirect step
+
+### Step 1 — Clone and Open in Dev Container
+
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/came-api-sniffer.git
+   ```
+2. Open the folder in VS Code.
+3. VS Code will detect the Dev Container configuration and prompt you to **"Reopen in Container"**. Click it.
+   - Or press `Cmd+Shift+P` (macOS) / `Ctrl+Shift+P` (Linux/Windows) and select **Dev Containers: Reopen in Container**.
+4. Wait for the container to build. All Python dependencies are installed automatically.
+
+### Step 2 — Configure
+
+Inside the container terminal:
 
 ```bash
-git clone https://github.com/yourusername/came-api-sniffer.git
-cd came-api-sniffer
 cp .env.example .env
 ```
 
-### 2. Configure CAME Server
+Edit `.env` and set `CAME_HOST` to your CAME server's LAN IP address (e.g. `192.168.1.3`).
 
-Edit `.env` and set `CAME_HOST` to your CAME server's IP address:
+### Step 3 — Start the Sniffer
 
-```env
-CAME_HOST=192.168.x.x
-CAME_PORT=80
-```
+**Option A** — VS Code Task: press `Cmd+Shift+P` → **Tasks: Run Task** → **Start**.
 
-### 3. Open in VSCode Container
-
-1. Open the project in VSCode
-2. Press `Cmd+Shift+P` (or `Ctrl+Shift+P` on Linux/Windows)
-3. Select "Dev Containers: Reopen in Container"
-4. VSCode will build and start the container
-
-### 4. Start the Proxy
+**Option B** — Terminal (inside the container):
 
 ```bash
-python src/main.py
+./scripts/start.sh
 ```
 
-The proxy starts on ports:
-- **80** (proxy server) — receives requests from Android app
-- **8081** (dashboard) — open in browser: `http://localhost:8081`
+This starts:
+- The **proxy** on port 80 (inside the container)
+- The **web dashboard** on port 8081 — open [http://localhost:8081](http://localhost:8081) in your browser
 
-### 5. Configure Android App
+### Step 4 — Redirect Port 80 on the Host (macOS)
 
-1. Open CAME Domotic app
-2. Go to Settings
-3. Find the server IP setting
-4. Change it to your Mac's IP on the LAN (e.g., `192.168.1.100`)
-5. The app will now communicate through the proxy
+On macOS, Docker Desktop maps container ports to random host ports. The CAME Android app must connect on **port 80**, so you need to redirect the host's port 80 to the container's mapped port.
 
-**Important:** You do NOT need to configure HTTP proxy in Android settings. Only change the server IP in the CAME app itself.
+1. Check which host port was assigned to the container's port 80. Look in the VS Code **Ports** tab or run `docker ps`.
+2. Set `PROXY_PORT` in your `.env` file to that host port number (e.g. `59832`).
+3. **On the macOS host terminal** (not inside the container), run:
 
-## Dashboard Usage
+```bash
+sudo ./scripts/redirect-port80.sh
+```
 
-### View Exchanges
+This starts a `socat` process that forwards `host:80 → 127.0.0.1:PROXY_PORT`.
 
-- **List view** shows all captured HTTP exchanges in real-time
-- **Columns**: Timestamp, Session ID, App Method, Path, HTTP Status, Duration
-- **Real-time updates**: New exchanges appear automatically (if auto-refresh is enabled)
-- **Auto-refresh toggle**: Enable/disable automatic list updates
+> **Caution:** This requires `sudo`, binds to port 80, and kills any existing `socat` processes. Make sure nothing important on your system uses port 80 or socat before running this.
 
-### Search & Filter
+### Step 5 — Point the Android App to the Proxy
 
-- **Full-text search**: Search in request/response bodies, paths
-- **Session ID**: Filter by specific session (autocomplete)
-- **App Method**: Filter by cmd_name or sl_cmd
-- **Date range**: Filter by timestamp range (From/To)
+In the CAME Domotic Android app, change the server address to **your Mac's LAN IP** (e.g. `192.168.1.100`). The app connects on port 80, hits the proxy, and the proxy forwards everything to the real CAME server. The app won't notice any difference.
 
-### View Exchange Details
+### Step 6 — Stop Everything
 
-- Click any row to open the detail panel (right side)
-- Shows complete request and response with headers and body
-- Headers are collapsible (click to expand/collapse)
-- JSON bodies are pretty-printed with syntax highlighting
+**Inside the container**, stop the sniffer:
 
-### Actions
+```bash
+./scripts/stop.sh
+```
 
-- **Copy as cURL**: Generate exact curl command for the request
-- **Export as TXT**: Download this exchange as formatted text file
+Or use the VS Code task: `Cmd+Shift+P` → **Tasks: Run Task** → **Stop**.
 
-### Export Data
+**On the macOS host**, remove the port 80 redirect:
 
-Click the **Export ↓** button to export in multiple modes:
+```bash
+sudo ./scripts/restore-port80.sh
+```
 
-- **Export Results**: Current filtered/searched results
-- **Export Session**: All exchanges for a specific session
-- **Export Range**: All exchanges in a date/time range
-- **Export All**: All captured exchanges
+> **Important:** Always run the restore script when you're done. Leaving the redirect active keeps `socat` listening on port 80 as root, which will interfere with other services and is a security risk.
 
-Exports are saved as `.txt` files with pretty-printed formatting, readable in any text editor.
+## Dashboard
+
+The web dashboard at [http://localhost:8081](http://localhost:8081) shows:
+
+- **Live feed** of captured exchanges (real-time via WebSocket)
+- **Full-text search** across request and response bodies
+- **Filters** by session ID, app method, and time range
+- **Detail view** with headers, parsed JSON body, and response
+- **Export** to TXT files (all, by session, or by time range)
 
 ## Data Storage
 
-### Directory Structure
+Captured exchanges are stored in `data/`:
 
-```
-data/
-├── exchanges/           # Individual JSON files (request + response)
-├── exports/            # Exported TXT files
-└── came_proxy.db       # SQLite database
-```
-
-### JSON Files
-
-Each exchange is saved as:
-```
-{session_id}_{timestamp}_{exchange_id_short}.json
-```
-
-Example:
-```
-5046b5a9_20250315-143022-456_a1b2c3d4.json
-```
-
-Format:
-```json
-{
-  "exchange_id": "a1b2c3d4-...-uuid",
-  "session_id": "5046b5a9",
-  "app_method": "feature_list_req",
-  "timestamp_start": "2025-03-15T14:30:22.456Z",
-  "timestamp_end": "2025-03-15T14:30:22.789Z",
-  "duration_ms": 333,
-  "request": {
-    "method": "POST",
-    "path": "/endpoint",
-    "query_string": "",
-    "headers": { "Content-Type": "application/json", ... },
-    "body": { ... }
-  },
-  "response": {
-    "status_code": 200,
-    "headers": { ... },
-    "body": { ... }
-  },
-  "error": null
-}
-```
-
-### SQLite Database
-
-The database contains a single `exchanges` table with indexes for fast querying:
-- `idx_timestamp` — find exchanges by time
-- `idx_session_id` — find exchanges by session
-- `idx_app_method` — find exchanges by method
-- `idx_path` — find exchanges by path
-
-Full-text search (FTS5) enabled for rapid searching across bodies and paths.
-
-## API Endpoints
-
-All endpoints are available at `http://localhost:8081`
-
-### REST API
-
-#### `GET /api/exchanges`
-
-List exchanges with pagination and filters.
-
-Query parameters:
-- `page`: Page number (default: 1)
-- `page_size`: Results per page (default: 20)
-- `search`: Full-text search query
-- `session_id`: Filter by session ID
-- `app_method`: Filter by app method
-- `from_ts`: Start timestamp (ISO 8601)
-- `to_ts`: End timestamp (ISO 8601)
-
-Response:
-```json
-{
-  "exchanges": [...],
-  "page": 1,
-  "page_size": 20,
-  "total_count": 150,
-  "total_pages": 8
-}
-```
-
-#### `GET /api/exchanges/{exchange_id}`
-
-Get full details of single exchange.
-
-#### `GET /api/sessions`
-
-List distinct sessions with exchange counts.
-
-#### `GET /api/methods`
-
-List distinct app methods with counts.
-
-#### `GET /api/stats`
-
-Aggregate statistics:
-```json
-{
-  "total_exchanges": 150,
-  "distinct_sessions": 3,
-  "distinct_methods": 25,
-  "top_paths": [...]
-}
-```
-
-#### `DELETE /api/exchanges`
-
-Delete all exchanges (⚠️ irreversible).
-
-#### `GET /api/export`
-
-Export exchanges to TXT file.
-
-Parameters:
-- `mode`: `all`, `session`, or `range`
-- `session_id`: Required for mode=session
-- `from_ts`, `to_ts`: Required for mode=range
-
-### WebSocket
-
-#### `GET /ws`
-
-Real-time stream of new exchanges. Server sends JSON messages:
-```json
-{
-  "type": "new_exchange",
-  "exchange_id": "...",
-  "session_id": "...",
-  "app_method": "...",
-  "timestamp_start": "...",
-  "path": "...",
-  "duration_ms": 123,
-  "status_code": 200
-}
-```
+| Location | Format | Purpose |
+|----------|--------|---------|
+| `data/exchanges/*.json` | JSON | One file per exchange, human-readable |
+| `data/came_proxy.db` | SQLite | Queryable database with FTS5 full-text search |
+| `data/exports/*.txt` | TXT | Exported reports |
 
 ## Configuration
 
-### .env File
+All settings are in `.env` (see `.env.example`):
 
-```env
-# Server CAME target (required)
-CAME_HOST=192.168.x.x
-CAME_PORT=80
-
-# Proxy (must be 80 for Android app compatibility)
-PROXY_PORT=80
-
-# Dashboard web UI
-DASHBOARD_PORT=8081
-
-# Storage
-DATA_DIR=./data
-DB_NAME=came_proxy.db
-
-# Logging
-LOG_LEVEL=DEBUG
-```
-
-All variables have sensible defaults. Only required configuration is `CAME_HOST`.
-
-## Request/Response Format
-
-The CAME API uses JSON with a specific structure. The proxy extracts:
-
-- **Session ID**: `sl_client_id` field → stored as `session_id`
-- **App Method**: `sl_appl_msg.cmd_name` or fallback `sl_cmd` → stored as `app_method`
-
-Example request:
-```json
-{
-  "sl_appl_msg": {
-    "client": "5046b5a9",
-    "cmd_name": "feature_list_req",
-    "cseq": 1
-  },
-  "sl_appl_msg_type": "domo",
-  "sl_client_id": "5046b5a9",
-  "sl_cmd": "sl_data_req"
-}
-```
-
-The proxy is completely transparent — the CAME app cannot tell it's communicating through a proxy.
-
-## Troubleshooting
-
-### Port 80 Not Available
-
-**macOS/Docker Desktop:**
-- Close other services using port 80
-- Use `lsof -i :80` to find what's using port 80
-- Kill the process or use a different port (change `PROXY_PORT`)
-
-**Linux:**
-- May need `CAP_NET_BIND_SERVICE`: run container with elevated privileges
-- Or use a port >1024 (e.g., `PROXY_PORT=8080`)
-
-**Note:** Android app requires port 80 or 8080 to communicate. Some firewalls may block it.
-
-### App Can't Connect to Proxy
-
-1. Verify the Mac's LAN IP: `ifconfig | grep "inet "`
-2. Verify Android device is on same network (ping the Mac's IP from Android)
-3. Check firewall allows incoming connections on port 80/8081
-4. Verify Android app has the correct server IP configured
-
-### WebSocket Not Connecting
-
-- Check browser console (F12) for WebSocket errors
-- Verify `http://localhost:8081/ws` is accessible
-- Some corporate firewalls block WebSockets
-
-### No Exchanges Captured
-
-1. Verify proxy is running (`python src/main.py`)
-2. Check proxy logs for errors
-3. Verify CAME_HOST and CAME_PORT are correct
-4. Try accessing CAME server directly: `curl http://{CAME_HOST}:{CAME_PORT}/`
-
-## Development
-
-### Project Structure
-
-```
-came-api-sniffer/
-├── .devcontainer/
-│   ├── devcontainer.json
-│   └── Dockerfile
-├── src/
-│   ├── __init__.py
-│   ├── main.py              # Entry point
-│   ├── config.py            # Configuration
-│   ├── proxy.py             # HTTP reverse proxy
-│   ├── storage.py           # Dual storage (JSON + SQLite)
-│   ├── export.py            # Export functionality
-│   ├── dashboard.py         # Dashboard REST API + WebSocket
-│   └── static/
-│       ├── index.html       # Dashboard UI
-│       ├── style.css        # Dark theme
-│       └── app.js           # Frontend JavaScript
-├── data/                    # Created at runtime
-├── .env                     # Configuration (gitignored)
-├── .env.example
-├── requirements.txt
-├── README.md
-└── .gitignore
-```
-
-### Code Style
-
-- Python: PEP 8, type hints throughout
-- Async/await for all I/O operations
-- Logging instead of print statements
-- Comprehensive error handling
-
-### Adding New Features
-
-All components follow the pattern:
-1. **storage.py** — Persist data
-2. **proxy.py** or **dashboard.py** — Business logic
-3. **index.html** + **app.js** — UI
-
-Keep the proxy transparent and non-blocking. Use async/await for all I/O.
-
-## Technical Details
-
-### Dual Storage System
-
-- **JSON files**: Human-readable, self-contained, easy to share
-- **SQLite database**: Fast querying, indexing, FTS5 full-text search
-- Both stay in sync; single StorageManager interface
-
-### Async Architecture
-
-- Single asyncio event loop runs proxy + dashboard concurrently
-- All I/O (HTTP, database, file) non-blocking
-- Handles ~5 req/min comfortably; scales to higher volumes
-
-### Real-Time Updates
-
-- WebSocket connection pushes new exchanges to all connected clients
-- Dashboard auto-refreshes via WebSocket (or manual refresh if disabled)
-- Badge shows pending exchanges when auto-refresh is off
-
-### Export Format
-
-Exports are TXT files with pretty-printed formatting:
-```
-══════════════════════════════════════════════════════════════════
-EXCHANGE: a1b2c3d4-1234-5678-9012-abcdef123456
-SESSION:  5046b5a9
-METHOD:   feature_list_req
-TIME:     2025-03-15T14:30:22.456Z → 2025-03-15T14:30:22.789Z (333ms)
-══════════════════════════════════════════════════════════════════
-
-────────────────────────────────────────────────────────────────────
-REQUEST
-────────────────────────────────────────────────────────────────────
-POST /endpoint
-
-Headers:
-  Content-Type: application/json
-
-Body:
-{
-  "sl_appl_msg": { ... },
-  ...
-}
-
-────────────────────────────────────────────────────────────────────
-RESPONSE
-────────────────────────────────────────────────────────────────────
-Status: 200
-
-Headers:
-  Content-Type: application/json
-
-Body:
-{
-  ...
-}
-
-══════════════════════════════════════════════════════════════════
-```
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CAME_HOST` | *(required)* | CAME server IP on your LAN |
+| `CAME_PORT` | `80` | CAME server port |
+| `PROXY_PORT` | `80` | Proxy listen port (also used by redirect script) |
+| `DASHBOARD_PORT` | `8081` | Dashboard web UI port |
+| `DATA_DIR` | `./data` | Storage directory |
+| `DB_NAME` | `came_proxy.db` | SQLite database filename |
+| `LOG_LEVEL` | `DEBUG` | Logging verbosity |
 
 ## License
 
-This project is provided as-is for reverse engineering and educational purposes.
-
-## Support
-
-For issues, questions, or suggestions:
-1. Check this README
-2. Review logs: Proxy and dashboard output to console
-3. Check browser console (F12) for frontend errors
-4. Examine data in `data/exchanges/` directory
-
-## Disclaimer
-
-This tool is designed for analyzing your own CAME server and Android app in a controlled environment. Ensure compliance with applicable laws and CAME's terms of service before using.
+This project is provided as-is for personal research and educational use.

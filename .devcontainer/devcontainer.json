@@ -11,7 +11,8 @@
         "anthropic.claude-code",
         "ms-python.python",
         "ms-python.pylint",
-        "charliermarsh.ruff"
+        "charliermarsh.ruff",
+        "ms-vscode-remote.remote-containers"
       ]
     }
   },
