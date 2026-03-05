@@ -251,12 +251,16 @@ html, body {
     cursor: pointer;
 }
 
+.exchange-table-wrapper {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+}
+
 .exchange-table {
     width: 100%;
     border-collapse: collapse;
     font-size: 12px;
-    flex: 1;
-    overflow-y: auto;
 }
 
 .exchange-table thead {
