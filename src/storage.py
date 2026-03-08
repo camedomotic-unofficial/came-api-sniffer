@@ -1,12 +1,11 @@
 """Storage module for CAME API Sniffer.
 
-Implements dual storage system (JSON files + SQLite database) for exchanges.
+Implements SQLite-based storage for exchanges.
 Provides unified interface for saving and querying exchanges.
 """
 
 import json
 import sqlite3
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
@@ -22,14 +21,9 @@ class StorageManager:
     def __init__(self):
         """Initialize storage manager."""
         self.data_dir = Path(CONFIG.data_dir)
-        self.exchanges_dir = self.data_dir / "exchanges"
-        self.exports_dir = self.data_dir / "exports"
         self.db_path = self.data_dir / CONFIG.db_name
 
-        # Create directories
         self.data_dir.mkdir(exist_ok=True)
-        self.exchanges_dir.mkdir(exist_ok=True)
-        self.exports_dir.mkdir(exist_ok=True)
 
         self.db: Optional[aiosqlite.Connection] = None
 
@@ -170,37 +164,8 @@ class StorageManager:
         """
         return str(uuid4())
 
-    def _format_timestamp(self, dt: datetime) -> str:
-        """Format datetime to ISO 8601 string.
-
-        Args:
-            dt: datetime object.
-
-        Returns:
-            str: ISO 8601 formatted string.
-        """
-        return dt.isoformat() + "Z"
-
-    def _generate_filename(
-        self, session_id: Optional[str], timestamp: datetime, exchange_id: str
-    ) -> str:
-        """Generate JSON filename.
-
-        Args:
-            session_id: Session ID or None.
-            timestamp: Request timestamp.
-            exchange_id: Exchange UUID.
-
-        Returns:
-            str: Filename in format {session_id}_{timestamp}_{exchange_id_short}.json
-        """
-        session = session_id if session_id else "no-session"
-        timestamp_str = timestamp.strftime("%Y%m%d-%H%M%S") + f"-{timestamp.microsecond // 1000:03d}"
-        exchange_short = exchange_id[:8]
-        return f"{session}_{timestamp_str}_{exchange_short}.json"
-
     async def save_request(self, exchange_data: dict[str, Any]) -> str:
-        """Save request to both JSON file and SQLite database.
+        """Save request to SQLite database.
 
         Args:
             exchange_data: Exchange data dictionary with request info.
@@ -215,19 +180,14 @@ class StorageManager:
             exchange_id = exchange_data["exchange_id"]
             session_id = exchange_data.get("session_id")
             app_method = exchange_data.get("app_method")
-            timestamp_start = datetime.fromisoformat(
-                exchange_data["timestamp_start"].rstrip("Z")
-            )
             request = exchange_data["request"]
 
-            # Convert headers to JSON string
             request_headers = json.dumps(request.get("headers", {}))
-            request_body = request.get("body", "")  # raw body string
+            request_body = request.get("body", "")
             request_body_parsed = request.get("body_parsed")
             if isinstance(request_body_parsed, dict):
                 request_body_parsed = json.dumps(request_body_parsed)
 
-            # Save to SQLite
             await self.db.execute(
                 """
                 INSERT INTO exchanges (
@@ -250,12 +210,6 @@ class StorageManager:
                 ),
             )
             await self.db.commit()
-
-            # Save to JSON file
-            filename = self._generate_filename(session_id, timestamp_start, exchange_id)
-            filepath = self.exchanges_dir / filename
-            with open(filepath, "w") as f:
-                json.dump(exchange_data, f, indent=2)
 
             LOGGER.debug(f"Saved request for exchange {exchange_id}")
             return exchange_id
@@ -280,7 +234,6 @@ class StorageManager:
             if isinstance(response_body, dict):
                 response_body = json.dumps(response_body)
 
-            # Update SQLite
             await self.db.execute(
                 """
                 UPDATE exchanges
@@ -299,22 +252,6 @@ class StorageManager:
             )
             await self.db.commit()
 
-            # Update JSON file
-            # Find the file for this exchange
-            for filepath in self.exchanges_dir.glob("*" + exchange_id[:8] + ".json"):
-                with open(filepath, "r") as f:
-                    data = json.load(f)
-                data["timestamp_end"] = response_data["timestamp_end"]
-                data["duration_ms"] = response_data.get("duration_ms")
-                data["response"] = {
-                    "status_code": response_data["status_code"],
-                    "headers": response_data.get("headers", {}),
-                    "body": response_data.get("body"),
-                }
-                with open(filepath, "w") as f:
-                    json.dump(data, f, indent=2)
-                break
-
             LOGGER.debug(f"Saved response for exchange {exchange_id}")
 
         except Exception as e:
@@ -322,45 +259,21 @@ class StorageManager:
             raise
 
     async def update_session_id(
-        self, exchange_id: str, session_id: str, timestamp_start: datetime
+        self, exchange_id: str, session_id: str, timestamp_start: Any
     ) -> None:
         """Update session_id for an exchange (e.g. after login response reveals it).
-
-        Updates SQLite, JSON file content, and renames the JSON file to reflect
-        the new session_id.
 
         Args:
             exchange_id: Exchange ID.
             session_id: New session ID to set.
-            timestamp_start: Request timestamp (needed for filename generation).
+            timestamp_start: Unused, kept for call-site compatibility.
         """
         try:
-            # Update SQLite
             await self.db.execute(
                 "UPDATE exchanges SET session_id = ? WHERE exchange_id = ?",
                 (session_id, exchange_id),
             )
             await self.db.commit()
-
-            # Update and rename JSON file
-            for filepath in self.exchanges_dir.glob("*" + exchange_id[:8] + ".json"):
-                with open(filepath, "r") as f:
-                    data = json.load(f)
-                data["session_id"] = session_id
-
-                # Write updated content to new filename
-                new_filename = self._generate_filename(
-                    session_id, timestamp_start, exchange_id
-                )
-                new_filepath = self.exchanges_dir / new_filename
-                with open(new_filepath, "w") as f:
-                    json.dump(data, f, indent=2)
-
-                # Remove old file if name changed
-                if filepath != new_filepath:
-                    filepath.unlink()
-
-                break
 
             LOGGER.debug(
                 f"Updated session_id to {session_id} for exchange {exchange_id}"
@@ -382,15 +295,6 @@ class StorageManager:
                 (error_msg, exchange_id),
             )
             await self.db.commit()
-
-            # Update JSON file
-            for filepath in self.exchanges_dir.glob("*" + exchange_id[:8] + ".json"):
-                with open(filepath, "r") as f:
-                    data = json.load(f)
-                data["error"] = error_msg
-                with open(filepath, "w") as f:
-                    json.dump(data, f, indent=2)
-                break
 
         except Exception as e:
             LOGGER.error(f"Error saving error: {e}")
@@ -615,15 +519,11 @@ class StorageManager:
             raise
 
     async def delete_all_exchanges(self) -> None:
-        """Delete all exchanges from database and remove JSON files."""
+        """Delete all exchanges from database."""
         try:
             await self.db.execute("DELETE FROM exchanges")
             await self.db.execute("DELETE FROM session_annotations")
             await self.db.commit()
-
-            # Remove JSON files
-            for filepath in self.exchanges_dir.glob("*.json"):
-                filepath.unlink()
 
             LOGGER.info("Deleted all exchanges")
 
@@ -641,27 +541,18 @@ class StorageManager:
             True if the exchange was found and deleted, False otherwise.
         """
         try:
-            # Get exchange info for JSON file removal
             cursor = await self.db.execute(
-                "SELECT session_id, timestamp_start FROM exchanges WHERE exchange_id = ?",
+                "SELECT exchange_id FROM exchanges WHERE exchange_id = ?",
                 (exchange_id,),
             )
             row = await cursor.fetchone()
             if not row:
                 return False
 
-            session_id = row["session_id"] or "no-session"
-            exchange_id_short = exchange_id[:8]
-
-            # Delete from SQLite
             await self.db.execute(
                 "DELETE FROM exchanges WHERE exchange_id = ?", (exchange_id,)
             )
             await self.db.commit()
-
-            # Remove JSON file
-            for filepath in self.exchanges_dir.glob(f"*_{exchange_id_short}.json"):
-                filepath.unlink()
 
             LOGGER.info(f"Deleted exchange {exchange_id}")
             return True
@@ -688,7 +579,6 @@ class StorageManager:
             result = await cursor.fetchone()
             count = result["count"] if result else 0
 
-            # Delete from SQLite
             await self.db.execute(
                 "DELETE FROM exchanges WHERE session_id = ?", (session_id,)
             )
@@ -697,10 +587,6 @@ class StorageManager:
                 (session_id,),
             )
             await self.db.commit()
-
-            # Remove JSON files for this session
-            for filepath in self.exchanges_dir.glob(f"{session_id}_*.json"):
-                filepath.unlink()
 
             LOGGER.info(f"Deleted {count} exchanges for session {session_id}")
             return count
