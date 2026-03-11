@@ -112,6 +112,21 @@ html, body {
     align-items: center;
 }
 
+.search-bar .checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+}
+
+.search-bar .checkbox-label input[type="checkbox"] {
+    cursor: pointer;
+}
+
 .search-input, .btn {
     padding: 8px 12px;
     background-color: var(--bg-tertiary);

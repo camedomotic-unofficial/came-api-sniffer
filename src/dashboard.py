@@ -82,6 +82,7 @@ class DashboardBackend:
             app_method = request.rel_url.query.get("app_method")
             from_ts = request.rel_url.query.get("from_ts")
             to_ts = request.rel_url.query.get("to_ts")
+            exclude_method = request.rel_url.query.get("exclude_method")
 
             exchanges, total_count = await storage.query_exchanges(
                 page=page,
@@ -91,6 +92,7 @@ class DashboardBackend:
                 app_method=app_method,
                 from_ts=from_ts,
                 to_ts=to_ts,
+                exclude_method=exclude_method,
             )
 
             return web.json_response({

@@ -308,6 +308,7 @@ class StorageManager:
         app_method: Optional[str] = None,
         from_ts: Optional[str] = None,
         to_ts: Optional[str] = None,
+        exclude_method: Optional[str] = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Query exchanges with filters.
 
@@ -319,6 +320,7 @@ class StorageManager:
             app_method: Filter by app method.
             from_ts: Start timestamp (ISO 8601).
             to_ts: End timestamp (ISO 8601).
+            exclude_method: Exclude exchanges with this app_method.
 
         Returns:
             Tuple of (exchanges list, total count).
@@ -350,6 +352,10 @@ class StorageManager:
             if to_ts:
                 where_clauses.append("timestamp_start <= ?")
                 params.append(to_ts)
+
+            if exclude_method:
+                where_clauses.append("(app_method IS NULL OR app_method != ?)")
+                params.append(exclude_method)
 
             where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
 

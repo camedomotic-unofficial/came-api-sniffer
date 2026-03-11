@@ -17,7 +17,8 @@ const state = {
         session_id: '',
         app_method: '',
         from_ts: '',
-        to_ts: ''
+        to_ts: '',
+        exclude_method: ''
     },
     wsConnected: false,
     exportMode: null,
@@ -507,29 +508,47 @@ function updatePendingBadge() {
     }
 }
 
+function readFiltersFromDOM() {
+    return {
+        search: document.getElementById('search-text').value,
+        session_id: document.getElementById('session-id').value,
+        app_method: document.getElementById('app-method').value,
+        from_ts: document.getElementById('from-ts').value,
+        to_ts: document.getElementById('to-ts').value,
+        exclude_method: document.getElementById('hide-status-update').checked ? 'status_update_req' : ''
+    };
+}
+
 // Event Listeners
 function setupEventListeners() {
     // Filters
     document.getElementById('search-btn').onclick = () => {
         state.currentPage = 1;
-        state.filters = {
-            search: document.getElementById('search-text').value,
-            session_id: document.getElementById('session-id').value,
-            app_method: document.getElementById('app-method').value,
-            from_ts: document.getElementById('from-ts').value,
-            to_ts: document.getElementById('to-ts').value
-        };
+        state.filters = readFiltersFromDOM();
+        renderExchangeList();
+    };
+
+    document.getElementById('hide-status-update').onchange = () => {
+        state.currentPage = 1;
+        state.filters = readFiltersFromDOM();
+        renderExchangeList();
+    };
+
+    document.getElementById('session-id').onchange = () => {
+        state.currentPage = 1;
+        state.filters = readFiltersFromDOM();
         renderExchangeList();
     };
 
     document.getElementById('reset-btn').onclick = () => {
         state.currentPage = 1;
-        state.filters = { search: '', session_id: '', app_method: '', from_ts: '', to_ts: '' };
+        state.filters = { search: '', session_id: '', app_method: '', from_ts: '', to_ts: '', exclude_method: '' };
         document.getElementById('search-text').value = '';
         document.getElementById('session-id').selectedIndex = 0;
         document.getElementById('app-method').selectedIndex = 0;
         document.getElementById('from-ts').value = '';
         document.getElementById('to-ts').value = '';
+        document.getElementById('hide-status-update').checked = false;
         renderExchangeList();
     };
 
