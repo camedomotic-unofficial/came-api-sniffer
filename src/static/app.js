@@ -782,11 +782,14 @@ async function showExportModal(mode) {
 
     if (mode === 'session') {
         const sessions = await api.getSessions();
+        const sortedSessions = [...sessions.sessions].sort((a, b) =>
+            (b.last_timestamp || '').localeCompare(a.last_timestamp || '')
+        );
         form.innerHTML = `
             <div class="form-group">
                 <label>Select Session:</label>
                 <select id="export-session-select">
-                    ${sessions.sessions.map(s => `<option value="${s.session_id}">${s.session_name ? `${s.session_name} (${s.session_id})` : s.session_id} [${s.count}]</option>`).join('')}
+                    ${sortedSessions.map(s => `<option value="${s.session_id}">${s.session_name ? `${s.session_name} (${s.session_id})` : s.session_id} [${s.count}]</option>`).join('')}
                 </select>
             </div>
             <div class="form-group">
@@ -849,7 +852,11 @@ async function loadSessionAnnotations() {
     // Keep first option ("All Sessions"), clear rest
     while (sessionSelect.options.length > 1) sessionSelect.remove(1);
 
-    sessionsData.sessions.forEach(s => {
+    const sortedSessions = [...sessionsData.sessions].sort((a, b) =>
+        (b.last_timestamp || '').localeCompare(a.last_timestamp || '')
+    );
+
+    sortedSessions.forEach(s => {
         state.sessionAnnotations[s.session_id] = {
             session_name: s.session_name,
             session_notes: s.session_notes

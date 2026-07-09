@@ -451,7 +451,8 @@ class StorageManager:
             cursor = await self.db.execute(
                 """
                 SELECT e.session_id, COUNT(*) as count,
-                       sa.name as session_name, sa.notes as session_notes
+                       sa.name as session_name, sa.notes as session_notes,
+                       MAX(e.timestamp_start) as last_timestamp
                 FROM exchanges e
                 LEFT JOIN session_annotations sa ON e.session_id = sa.session_id
                 WHERE e.session_id IS NOT NULL
